@@ -1,0 +1,87 @@
+name: macrotraderacademy
+
+# Development stack: the app runs from the cloned source via `next dev`,
+# PostgreSQL runs as a plain service. Source is bind-mounted so edits appear
+# without rebuilding; only dependencies live in the image.
+
+services:
+  db:
+    image: postgres:16
+    restart: on-failure
+    environment:
+      POSTGRES_USER: mta
+      POSTGRES_PASSWORD: mta_dev_password
+      POSTGRES_DB: mta
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mta -d mta"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: applies db/schema.sql and seeds demo content, then exits.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.base44
+    working_dir: /app
+    restart: "no"
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    environment:
+      DATABASE_URL: postgres://mta:mta_dev_password@db:5432/mta
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["node", "scripts/migrate.mjs"]
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.base44
+    working_dir: /app
+    restart: on-failure
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    environment:
+      DATABASE_URL: postgres://mta:mta_dev_password@db:5432/mta
+      # Sandbox preview: pass the platform-provided values through so Next's
+      # allowedDevOrigins covers the proxy origin (see next.config.ts).
+      BASE44_PREVIEW_MODE:
+      BASE44_PUBLIC_HOST_SUFFIX: ${BASE44_PUBLIC_HOST_SUFFIX}
+      BASE44_SANDBOX_HOST_DOMAIN: ${BASE44_SANDBOX_HOST_DOMAIN}
+      # Bind mounts on this VM do not emit inotify events reliably.
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+    # Platform-managed secrets (SESSION_SECRET). Listed last so dashboard
+    # values always win over anything else.
+    env_file:
+      - /run/base44/app.env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    labels:
+      base44.project: "Macrotrader Academy"
+      base44.kind: "web"
+      base44.port: "3000"
+
+volumes:
+  db-data:
